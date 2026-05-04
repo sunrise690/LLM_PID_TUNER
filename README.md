@@ -1,561 +1,193 @@
-# LLM-PID-Tuner
+# LLM PID Tuner
 
-一个用大语言模型辅助 PID 调参的实用工具。
+这是一个面向 STM32 PID 调参实验的本地部署版工具。它把串口采样、响应指标计算、LLM 参数建议和安全回退串成一个闭环，目标是让已经能运行的控制系统更容易完成 PID 初调和细调。
 
-> 💬 QQ 群：1082281492 - 欢迎加入交流讨论
-> 📺 [B站教程视频](https://b23.tv/WVUuIFb) - 详细视频教程手把手教你使用
-> 📺 [YouTube 教程视频](https://youtu.be/Giruc9kN53Y)
+本仓库基于开源项目 [KINGSTON-115/llm-pid-tuner](https://github.com/KINGSTON-115/llm-pid-tuner) 二次整理，并结合 [laigure/robot-control-prompts](https://github.com/laigure/robot-control-prompts) 中“真实采样、指标驱动、安全回退”的思路做了本地化封装。
 
-中文 | [English](./docs/en-US/README.md)
+## What This Is
 
-[![Star History Chart](https://api.star-history.com/svg?repos=KINGSTON-115/llm-pid-tuner&type=Date)](https://star-history.com/#KINGSTON-115/llm-pid-tuner)
+这个仓库主要解决三个问题：
 
-> 如果你是第一次接触这个项目，**不要先折腾 Python**。
-> **最省事的用法是直接下载 Release 里的 `llm-pid-tuner.exe`。**
+- 本地运行一个 CLI/TUI 版 LLM PID 调参器
+- 通过串口读取 STM32 或其他控制板持续上报的控制数据
+- 根据真实采样数据让 LLM 给出下一轮 PID 建议，并在结果变差时回退
 
-## 最新开发版教程入口
+它不是一键保证完美控制的工具，也不能替代硬件保护。真实设备调参前，请先保证限幅、急停、机械保护和电源保护都可靠。
 
-如果你想看 **最新功能、最新教程、最新 Simulink 配置说明**，请直接参考 `dev` 分支文档：
+## Local Layout
 
-- [最新总览（中文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/README.md) | [最新总览（英文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/docs/en-US/README.md)
-- [最新 Simulink 指南（中文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/docs/zh-CN/MATLAB_GUIDE.md) | [最新 Simulink 指南（英文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/docs/en-US/MATLAB_GUIDE.md)
-- [最新项目说明（中文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/docs/zh-CN/PROJECT_DOC.md) | [最新项目说明（英文）](https://github.com/KINGSTON-115/llm-pid-tuner/blob/dev/docs/en-US/PROJECT_DOC.md)
-
-如果你只想使用 **当前稳定版 main**，继续阅读本页即可。
-
-## 目录
-
-- [系统结构图](#系统结构图)
-- [先看你该怎么用](#先看你该怎么用)
-- [这个项目适合什么场景](#这个项目适合什么场景)
-- [它不是做什么的](#它不是做什么的)
-- [3 分钟上手：Windows 打包版（推荐给小白）](#3-分钟上手windows-打包版推荐给小白)
-- [config.json 怎么填](#configjson-怎么填)
-- [推荐模型与接口填写方式](#推荐模型与接口填写方式)
-- [如何自定义提示词 (Prompt)](#如何自定义提示词-prompt)
-- [MATLAB/Simulink 仿真模式](#matlabsimulink-仿真模式)
-- [如果你还没有硬件，先跑仿真](#如果你还没有硬件先跑仿真)
-- [进阶：源码方式运行](#进阶源码方式运行)
-
-## 系统结构图
+我本机的推荐目录结构是：
 
 ```text
-┌──────────────────────── 本地仿真模式 (Simulator) ────────────────────────┐
-│                                                                         │
-│  simulator.py  ───────────── API(JSON) ─────────────>  LLM / AI Tuner   │
-│  (热系统仿真)                                           (生成 PID 建议)   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────── 真实硬件模式 (Hardware) ─────────────────────────┐
-│                                                                         │
-│  MCU / firmware.cpp ── Serial(CSV) ──> tuner.py ── API ──> LLM          │
-│  (Arduino / ESP32)                    (上位机 / .exe)                    │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+D:\github\LLM_PID_TUNER\llm-pid-tuner-dev
 ```
 
-## 先看你该怎么用
+如果把它作为 STM32 工程的外部工具调用，可以在 STM32 工程根目录保留很小的包装脚本：
 
-- **只想调硬件，不想配开发环境**：走 `exe` 路线，见下方“3 分钟上手”。
-- **想先看看这个项目到底有没有用**：运行 `simulator.py` 做本地热系统仿真。
-- **想接自己的 Arduino / ESP32 / 其他控制板**：使用 `firmware.cpp` + `tuner.py` / `llm-pid-tuner.exe`。
-- **想二次开发或看内部设计**：看 [PROJECT_DOC.md](docs/zh-CN/PROJECT_DOC.md)。
+```text
+pid-tuner.bat
+pid-tuner.ps1
+PID_TUNER_USAGE.md
+```
 
-## 这个项目适合什么场景
+这样 STM32 工程不需要包含完整 Python 项目，只负责调用这个外部调参器。
 
-- 恒温控制：加热板、热端、恒温箱、水浴、烘箱
-- 电机 / 执行器：需要 PID 闭环调节的对象
-- 已经能跑，但参数不好：响应慢、超调大、抖动、稳态误差明显
-- 没有成熟整定经验，希望让 LLM 先帮你缩小试错范围
+## Quick Start
 
-## 它不是做什么的
+准备 Python 3.10+，然后在仓库目录中创建虚拟环境并安装依赖：
 
-- 它**不是**“一键保证完美控制”的魔法程序
-- 它**不是**替代硬件保护的安全系统
-- 它**不是**为了漂亮 benchmark 分数而设计的玩具
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-这个项目更在意的是：**真实调参时少走弯路、少炸参数、调差了还能回退。**
+复制配置模板：
 
----
+```powershell
+copy config.example.json config.json
+```
 
-## 3 分钟上手：Windows 打包版（推荐给小白）
+编辑 `config.json`，至少填写：
 
-### 第 1 步：下载打包版
+```json
+{
+  "SERIAL_PORT": "AUTO",
+  "BAUD_RATE": 115200,
+  "LLM_API_KEY": "your-api-key",
+  "LLM_API_BASE_URL": "https://api.openai.com/v1",
+  "LLM_MODEL_NAME": "gpt-5.5",
+  "LLM_PROVIDER": "openai"
+}
+```
 
-打开 [Release](https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest) 页面，并下载资产里的 `llm-pid-tuner.exe`。
+检查环境：
 
-### 第 2 步：准备硬件
+```powershell
+.\run-local.ps1 -Mode doctor
+```
 
-你需要一个能通过串口持续上报控制数据的板子。
+运行本地仿真：
 
-最简单的方式是直接参考仓库里的 `firmware.cpp`，它已经实现了这个项目默认使用的串口协议。
+```powershell
+.\run-local.ps1 -Mode sim
+```
 
-程序默认希望设备通过串口持续输出类似下面的 CSV 数据：
+连接真实硬件调参：
+
+```powershell
+.\run-local.ps1 -Mode tune
+```
+
+指定串口：
+
+```powershell
+.\run-local.ps1 -Mode tune -SerialPort COM5
+```
+
+## STM32 Telemetry Protocol
+
+硬件模式默认期望 MCU 持续通过串口输出 CSV 数据：
 
 ```text
 timestamp_ms,setpoint,input,pwm,error,p,i,d
 ```
 
-如果你不想自己适配协议，**最省事的办法就是直接从 `firmware.cpp` 开始。**
+字段含义：
 
-### 第 3 步：第一次运行 exe
+- `timestamp_ms`: MCU 时间戳，单位 ms
+- `setpoint`: 目标值
+- `input`: 当前测量值
+- `pwm`: 控制输出或执行器输出
+- `error`: 当前误差
+- `p/i/d`: 当前 PID 参数
 
-双击运行 `llm-pid-tuner.exe`。
+PC 端会根据采样窗口计算平均误差、最大误差、超调、稳态误差和振荡状态，并把这些指标交给 LLM 生成下一轮建议。
 
-启动器会先让你选择模式：`[1]` 真实硬件调参，`[2]` 本地仿真 TUI（默认）。
-如果你现在是准备接串口硬件，请先选 `[1]`。
+## Tuning Rules
 
-第一次运行时，如果当前目录下没有 `config.json`，程序会自动生成一份默认配置。
+硬件调参时的核心原则：
 
-### 第 4 步：填写 `config.json`
+- 只根据真实采样数据决策下一组 PID
+- 没有采到有效遥测时，先修通信或协议，不继续盲调
+- 每轮都观察超调、稳态误差、振荡次数和 PWM 行为
+- 参数变化要保守，接近稳定时更要小步调整
+- 响应变差或出现风险时，回退到已知最佳安全参数
 
-打开 `config.json`，至少先把“硬件模式最小必填项”改掉：
+这些规则已经写入硬件模式的 prompt context，位置在：
 
-```json
-{
-  "SERIAL_PORT": "AUTO",
-  "BAUD_RATE": 115200,
-  "LLM_API_KEY": "sk-your-key",
-  "LLM_API_BASE_URL": "https://api.openai.com/v1",
-  "LLM_MODEL_NAME": "gpt-4o",
-  "LLM_PROVIDER": "openai"
-}
+```text
+sim/prompt_context.py
 ```
 
-如果你只是想先跑 `simulator.py` 看效果，没有接真实串口，也可以先不填 `SERIAL_PORT`，只把 LLM 相关字段填好。
+## Useful Commands
 
-如果你要用 **MiniMax / DeepSeek / Ollama / LM Studio** 这类 OpenAI 兼容接口，通常这样配就行：
-
-```json
-{
-  "LLM_API_KEY": "你的 key",
-  "LLM_API_BASE_URL": "你的 /v1 地址",
-  "LLM_MODEL_NAME": "你的模型名",
-  "LLM_PROVIDER": "openai"
-}
-```
-
-比如 MiniMax 兼容接口可以是：
-
-```json
-{
-  "LLM_API_BASE_URL": "http://你的地址/v1",
-  "LLM_MODEL_NAME": "MiniMax-M2.5",
-  "LLM_PROVIDER": "openai"
-}
-```
-
-如果你用的是 **Claude 中转站 / OneAPI / New API 这类 OpenAI 兼容接口**，现在也可以更明确地写成：
-
-```json
-{
-  "LLM_API_BASE_URL": "https://你的中转站/v1",
-  "LLM_MODEL_NAME": "claude-3-7-sonnet",
-  "LLM_PROVIDER": "openai_claude"
-}
-```
-
-`openai_claude` 和 `openai` 都会走 OpenAI 兼容协议；前者只是专门给 Claude 中转站准备的显式选项。
-
-如果你使用 Claude 原生接口，再把 `LLM_PROVIDER` 改成 `anthropic`。
-
-### 第 5 步：重新运行 exe
-
-保存 `config.json` 后重新运行程序。
-
-- 如果 `SERIAL_PORT` 填的是 `AUTO`，程序会扫描串口并让你选择
-- 如果你已经知道端口号，比如 `COM5`，也可以直接写死，省掉选择步骤
-
-### 第 6 步：观察调参结果
-
-程序会持续：
-
-- 读取串口数据
-- 分析当前响应质量
-- 请求 LLM 给出新的 PID 建议
-- 必要时使用保底策略
-- 如果后续结果变差，会回退到之前更稳的参数
-- 当系统“已经够好”时，会尽量提前停止，避免过调
-
-你最终需要做的事通常只有一件：**把收敛后的 PID 参数写回你的固件。**
-
----
-
-## `config.json` 怎么填
-
-第一次运行 `tuner.py`、`simulator.py` 或 `llm-pid-tuner.exe` 时，如果当前目录没有 `config.json`，程序会自动生成一份默认配置。
-
-如果你喜欢先看模板，也可以直接参考仓库里的 `config.example.json`。
-
-### 先改这些就能跑起来
-
-**1. 真实硬件模式最小必填**
-
-```json
-{
-  "SERIAL_PORT": "AUTO",
-  "BAUD_RATE": 115200,
-  "LLM_API_KEY": "sk-your-key",
-  "LLM_API_BASE_URL": "https://api.openai.com/v1",
-  "LLM_MODEL_NAME": "gpt-4o",
-  "LLM_PROVIDER": "openai"
-}
-```
-
-**2. 本地 Python 仿真最小必填**
-
-```json
-{
-  "LLM_API_KEY": "sk-your-key",
-  "LLM_API_BASE_URL": "https://api.openai.com/v1",
-  "LLM_MODEL_NAME": "gpt-4o",
-  "LLM_PROVIDER": "openai"
-}
-```
-
-**3. Simulink 模式额外补这几项**
-
-```json
-{
-  "MATLAB_MODEL_PATH": "C:/models/my_pid_model.slx",
-  "MATLAB_PID_BLOCK_PATH": "my_pid_model/PID Controller",
-  "MATLAB_ROOT": "D:/Program Files/MATLAB/R2025b",
-  "MATLAB_OUTPUT_SIGNAL": "y_out",
-  "MATLAB_SIM_STEP_TIME": 15.0,
-  "MATLAB_SETPOINT": 200.0
-}
-```
-
-这 6 项是跑通单控制器模型的**最小必填**。
-
-如果你的 Simulink 模型不是“单个标准 PID Controller 块 + 一个输出信号”这种最简单结构（例如主副环、分离式 P/I/D 增益块），程序也支持更复杂的兼容字段。
-
-> **请直接查看完整的 [MATLAB/Simulink 调参指南](docs/zh-CN/MATLAB_GUIDE.md)**。
-> 指南里详细说明了：
-> - 如何快速获取正确的 Simulink 块路径
-> - 如何配置双控制器与分离式增益块
-> - `MATLAB_ROOT` 什么时候可以不填
-> - 常见环境报错（如 `No module named matlab.engine`）的解决方法
-
-### 按场景看配置项
-
-| 分类 | 什么时候需要 | 字段 | 说明 |
-| :--- | :--- | :--- | :--- |
-| 硬件串口 | 真实硬件调参 | `SERIAL_PORT` `BAUD_RATE` | `SERIAL_PORT` 不确定先填 `AUTO`，`BAUD_RATE` 要和固件一致 |
-| LLM 基础 | 所有模式都需要 | `LLM_API_KEY` `LLM_API_BASE_URL` `LLM_MODEL_NAME` `LLM_PROVIDER` | 这是最核心的一组配置，不填就无法调参 |
-| 调参行为 | 想微调策略时再改 | `BUFFER_SIZE` `MIN_ERROR_THRESHOLD` `MAX_TUNING_ROUNDS` `LLM_REQUEST_TIMEOUT` `LLM_DEBUG_OUTPUT` `PID_MAX_INCREASE_RATIO` | 新手建议先保持默认，只有在采样不够、网络慢或需要排查日志时再动。`PID_MAX_INCREASE_RATIO` 用于限制单次参数调整的最大倍数（如 1.5 表示最多增加 50%），填 0.0 则使用默认限制。 |
-| Simulink | 只在 MATLAB/Simulink 模式下需要 | `MATLAB_MODEL_PATH` `MATLAB_PID_BLOCK_PATH` `MATLAB_ROOT` `MATLAB_OUTPUT_SIGNAL` `MATLAB_SIM_STEP_TIME` `MATLAB_SETPOINT`，以及按需填写 `MATLAB_CONTROL_SIGNAL` `MATLAB_SETPOINT_BLOCK` `MATLAB_PID_BLOCK_PATHS` `MATLAB_PID_BLOCK_PATH_2` `MATLAB_P/I/D_BLOCK_PATH(_2)` | 最小 6 项先跑通，复杂模型再逐步补充兼容字段 |
-| 代理 | 只有需要代理时才填 | `HTTP_PROXY` `HTTPS_PROXY` `ALL_PROXY` `NO_PROXY` | 留空就是不启用 |
-
-> 硬件模式还带有内建的采样保护阈值（采样超时与最少有效样本数）。这些属于固定安全策略，目前不作为 `config.json` 的用户配置项开放。
-
-### `MATLAB_ROOT` 什么时候要填
-
-见 [MATLAB/Simulink 调参指南](docs/zh-CN/MATLAB_GUIDE.md)。
-
-### 关于环境变量
-
-程序也支持环境变量，并且**环境变量优先级高于 `config.json`**。
-
-例如：
+运行自检：
 
 ```powershell
-$env:LLM_API_KEY="sk-xxx"
-$env:LLM_API_BASE_URL="http://127.0.0.1:11434/v1"
-$env:LLM_MODEL_NAME="qwen2.5:7b"
-$env:LLM_PROVIDER="openai"
+.\run-local.ps1 -Mode doctor
 ```
 
-如果你是小白，**优先用 `config.json`，更直观。**
-
-
-### 关于代理（可选）
-
-如果你需要走 VPN/代理，可以在 `config.json` 里新增以下字段：
-
-```json
-{
-  "HTTP_PROXY": "http://127.0.0.1:7890",
-  "HTTPS_PROXY": "http://127.0.0.1:7890",
-  "ALL_PROXY": "http://127.0.0.1:7890",
-  "NO_PROXY": ""
-}
-```
-
-留空则**不启用代理**，对不需要代理的用户没有影响。
-
-### 导出 CSV 数据（可选）
-
-如果你希望将调参过程中的实时数据（时间戳、设定值、当前值、PWM、误差、PID参数等）保存下来，以便后续在 Excel 或 MATLAB 中分析，可以在 `config.json` 中配置 `CSV_EXPORT_PATH` 字段：
-
-```json
-{
-  "CSV_EXPORT_PATH": "logs/tuning_data.csv"
-}
-```
-
-- 填入你希望保存的 CSV 文件路径（支持相对路径或绝对路径）。
-- 每次运行调参时，程序会自动将数据追加到该文件中，并记录当前的 `session_id` 和 `round`（轮次），方便你区分不同次的调参记录。
-- 留空（`""`）则**不导出 CSV**。
-
----
-
-## 推荐模型与接口填写方式
-
-| 方案                             | `LLM_API_BASE_URL` 示例     | `LLM_PROVIDER`  | 说明                                        |
-| :------------------------------- | :-------------------------- | :-------------- | :------------------------------------------ |
-| OpenAI                           | `https://api.openai.com/v1` | `openai`        | 最省心                                      |
-| DeepSeek 兼容接口                | 对应服务商的 `/v1` 地址     | `openai`        | 常见且便宜                                  |
-| MiniMax 兼容接口                 | 对应服务商的 `/v1` 地址     | `openai`        | 推理能力适合调参                            |
-| Claude 中转站 / OneAPI / New API | 对应服务商的 `/v1` 地址     | `openai_claude` | Claude 模型走 OpenAI 兼容协议时用这个最直观 |
-| Ollama                           | `http://localhost:11434/v1` | `openai`        | 本地免费部署                                |
-| LM Studio                        | `http://localhost:1234/v1`  | `openai`        | 本地可视化较友好                            |
-| Anthropic Claude                 | `https://api.anthropic.com` | `anthropic`     | 原生接口用这个                              |
-
-这个项目现在做了更稳的解析和回退处理，**对 OpenAI 兼容接口更友好**。如果 SDK 路径不顺，它也会尽量走更直接的 HTTP 路径，减少“能调通 API 但程序不工作”的情况。
-
----
-
-## 如何自定义提示词 (Prompt)
-
-本项目提供了两种自定义提示词（调参策略）的方式，以适应不同的需求：
-
-### 1. 预调参对话（推荐，无需改代码）
-在每次启动调参（无论是仿真还是硬件模式）时，程序会首先进入**预调参对话 (Pre-Tuning Conversation)**。
-在这里，你可以直接用自然语言输入你的偏好。例如：
-- *"我希望系统绝对稳定，不能有任何超调，哪怕响应慢一点也没关系。"*
-- *"这是一个对响应速度要求极高的系统，允许 10% 以内的超调，请尽可能激进地调参。"*
-- *"注意，这个电机的死区比较大，P 参数可以给大一点。"*
-
-程序会自动将你的自然语言偏好转化为结构化的 JSON 约束，并附加到 LLM 的系统提示词中，从而改变 LLM 的调参行为。
-
-### 2. 修改源码中的系统提示词（进阶）
-如果你希望永久改变 LLM 的核心调参逻辑或角色设定，你需要修改源码：
-1. 打开 `llm/prompts.py` 文件。
-2. 找到 `_BASE_SYSTEM_PROMPT` 变量，这里定义了 LLM 的核心角色、职责和调参原则。
-3. 找到 `_MODE_NOTES` 变量，这里定义了不同模式（如 `hardware`, `simulink`, `python_sim`）下的特定规则。
-4. 根据你的需求修改这些字符串内容即可。
-
----
-
-## MATLAB/Simulink 仿真模式
-
-如果你已经有 MATLAB/Simulink 仿真模型，可以直接让 LLM 对你的模型进行 PID 调参，无需真实硬件。
-
-在 `config.json` 里至少填写下面这些字段，再运行 `python simulator.py` 或打包版启动器里的 Simulink 模式：
-
-- `MATLAB_MODEL_PATH`：Simulink `.slx` 文件路径
-- `MATLAB_PID_BLOCK_PATH`：模型里的 PID 模块完整路径
-- `MATLAB_OUTPUT_SIGNAL`：To Workspace 输出变量名
-- `MATLAB_ROOT`：MATLAB 安装根目录；打包版建议填写，源码运行如果当前 Python 已装好 MATLAB Engine 可以留空
-
-详细配置步骤、模型准备方法和常见问题，见 [MATLAB/Simulink 调参指南](docs/zh-CN/MATLAB_GUIDE.md)。
-
----
-
-
-## 如果你还没有硬件，先跑仿真
-
-如果你只是想确认这个项目到底在干什么，先跑这个：
-
-```bash
-pip install -r requirements.txt
-python simulator.py
-```
-
-`simulator.py` 会在本地模拟一个热系统，然后让 LLM 自动调参。
-这条路线最适合先理解项目，而不是直接上真实硬件。
-
-在调参循环开始前，程序现在会自动进行两个对新手非常友好的操作：
-- 运行环境诊断（`doctor.py`），检查配置、API 连接性、串口及代理设置。
-- 进行简短的系统辨识（热启动），给出比默认值更合理的初始 PID 建议。
-
-此外，交互模式下支持**预调参对话**（Pre-Tuning Dialog）。你可以用自然语言直接输入调参偏好或限制（例如：“超调不能超过 5%” 或 “响应可以慢点但绝不能震荡”），LLM 会自动提取为调参的硬性约束。
-
-如果你只想手动运行环境检查而不启动仿真，可以使用：
-
-```bash
-python doctor.py
-```
-
----
-
-## 进阶：源码方式运行
-
-如果你不想用 exe，也可以直接跑源码。
-
-### 分支说明（重要）
-
-- `dev` 分支：当前最新开发代码，功能修复、TUI 改动、打包前验证都会先进入这里
-- `main` 分支：更偏稳定展示和正式 release，同步会慢一些，不保证是当前最新行为
-- 如果你想源码运行、跟进最近修复，或者准备提 PR，建议直接拉 `dev`
-
-### 新拉仓库：直接拉 `dev`
-
-```bash
-git clone -b dev https://github.com/KINGSTON-115/llm-pid-tuner.git
-cd llm-pid-tuner
-```
-
-### 你已经拉过仓库：切到 `dev` 并更新
-
-```bash
-git fetch origin
-git checkout dev
-git pull --ff-only origin dev
-```
-
-### 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-如果你要跑 Simulink 源码模式，还需要让当前这个 Python 环境能导入 `matlab.engine`。不会配的话，直接看 [MATLAB/Simulink 调参指南](docs/zh-CN/MATLAB_GUIDE.md)。
-
-### 运行前先确认配置
-
-- 跑 `python tuner.py`：至少填好 LLM 配置和串口配置
-- 跑 `python simulator.py`：至少填好 LLM 配置
-- 跑 Simulink：再额外补 `MATLAB_*` 相关字段
-
-第一次运行时如果没有 `config.json`，程序会自动生成一份默认配置；你也可以直接从 `config.example.json` 开始改。
-
-### 运行仿真
-
-```bash
-python simulator.py
-```
-
-如果你想用旧式纯日志输出，而不是 TUI，或者需要强制切换显示语言：
-
-```bash
-python simulator.py --plain
-python simulator.py --lang en  # 强制使用英文界面，默认支持根据系统自动检测语言
-```
-
-### 连接真实硬件
-
-```bash
-python tuner.py
-```
-
-### 做系统辨识（可选）
-
-你可以先采一段阶跃响应数据，再用 `system_id.py` 给出一组初值建议：
-
-```bash
-python system_id.py --file sample_step.csv
-```
-
-这适合想先拿到一组“不会太离谱”的初始参数，再交给 LLM 继续细调的用户。
-
----
-
-## 主要文件是干什么的
-
-| 文件                        | 用途                                       |
-| :-------------------------- | :----------------------------------------- |
-| `launcher.py`               | 启动器，可选择硬件或仿真模式并支持语言切换 |
-| `tuner.py`                  | 真实硬件调参主程序，也是 exe 的核心入口    |
-| `simulator.py`              | 本地热系统仿真，适合演示和验证策略         |
-| `pid_safety.py`             | 参数保护、保底策略、最佳结果记录、回退逻辑 |
-| `firmware.cpp`              | 单片机侧示例固件，负责串口上报与执行 PID   |
-| `system_id.py`              | 利用阶跃响应做系统辨识，给出初始 PID 建议  |
-| `doctor.py`                 | 环境诊断检查工具，快速排查配置与连接问题   |
-| `benchmark.py`              | 固定随机种子的对比工具，更偏开发验证用途   |
-| `config.json`               | 运行配置文件                               |
-| `docs/zh-CN/PROJECT_DOC.md` | 面向开发者的内部说明文档                   |
-
----
-
-## 常见问题
-
-### 1）双击 exe 后一闪而过
-
-常见原因：
-
-- `config.json` 还没填好
-- API Key 无效
-- 串口打不开
-- 当前目录没有写入权限，导致配置文件生成失败
-
-建议直接在 PowerShell 里运行，这样错误信息不会消失：
+本地仿真：
 
 ```powershell
-.\llm-pid-tuner.exe
+.\run-local.ps1 -Mode sim
 ```
 
-### 2）程序找不到串口
+真实硬件：
 
-检查下面几件事：
+```powershell
+.\run-local.ps1 -Mode tune -SerialPort COM5
+```
 
-- 设备是否真的连上电脑
-- 驱动是否安装正确
-- 其他上位机是否已经占用了串口
-- `BAUD_RATE` 是否和单片机一致
+直接使用 Python 入口也可以：
 
-### 3）程序连上了，但一直没有数据
+```powershell
+.\.venv\Scripts\python.exe launcher.py sim
+.\.venv\Scripts\python.exe launcher.py tune COM5
+.\.venv\Scripts\python.exe doctor.py
+```
 
-大概率是你的固件输出格式和项目默认协议不一致。
-最稳妥的办法是先按 `firmware.cpp` 的格式对齐。
+## Important Security Notes
 
-### 4）LLM 能聊天，但程序调不动
+不要把 `config.json` 上传到 GitHub，它里面可能包含 API Key。
 
-多数时候是这几类问题：
+本仓库的 `.gitignore` 已经忽略：
 
-- `LLM_API_BASE_URL` 写错
-- 模型名写错
-- 你用的是 OpenAI 兼容接口，但 `LLM_PROVIDER` 填成了 `anthropic`
-- 你用的是 Claude 中转站，但把它当成了 Anthropic 原生接口；这时应该用 `openai_claude` 或 `openai`
-- 服务端虽然可用，但返回 JSON 风格不稳定
+```text
+config.json
+.venv/
+.pytest_cache/
+__pycache__/
+logs/
+artifacts/
+```
 
-### 5）调着调着结果变差怎么办
+提交前可以检查：
 
-现在的程序会：
+```powershell
+git status --short --ignored
+git check-ignore -v config.json .venv
+```
 
-- 给 PID 做基本护栏限制
-- LLM 异常时启用保底建议
-- 记录历史最佳稳定参数
-- 后续结果明显变差时自动回退
+## Tests
 
-也就是说，它的设计目标不是“每一轮都更激进”，而是**优先把系统留在一个更稳、更可用的位置。**
+运行测试：
 
-### 6）能不能完全离线使用
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
-可以，但前提是你本地起了兼容 OpenAI 接口的模型服务，比如：
+如果只想快速确认 prompt 和启动器没有坏：
 
-- Ollama
-- LM Studio
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests\test_prompt_context.py tests\test_launcher.py
+```
 
-然后把 `LLM_API_BASE_URL` 指向本地地址即可。
+## Credits
 
----
+本仓库是在以下项目基础上整理和本地化的：
 
-## 安全提醒
+- [KINGSTON-115/llm-pid-tuner](https://github.com/KINGSTON-115/llm-pid-tuner): LLM PID 调参器主体
+- [laigure/robot-control-prompts](https://github.com/laigure/robot-control-prompts): 真实设备调参 prompt 与安全策略参考
 
-**在真实硬件上调参时，请务必有人值守。**
-
-尤其是加热类系统，一定要有：
-
-- 硬件级限温
-- 传感器异常保护
-- 继电器 / MOS 管失控保护
-- 必要时的物理断电手段
-
-这个项目能帮你减少调参痛苦，但**不能替代硬件安全设计**。
-
----
-
-## 补充说明
-
-- 最新打包版请看 [Release](https://github.com/KINGSTON-115/llm-pid-tuner/releases/latest)
-- 打包方法见 [Issue #11](https://github.com/KINGSTON-115/llm-pid-tuner/issues/11)
-- 当前打包使用 Python `3.8`（见 `llm-pid-tuner.spec` 中 `matlabengineforpython3_8.pyd`）
-- 历史测试环境包含 `R2022b`；文档里的 `R2025b` 只是示例路径版本，请替换成你本机实际安装的 MATLAB 版本
-- 想看项目内部设计，请看 [PROJECT_DOC.md](docs/zh-CN/PROJECT_DOC.md)
-
-## License
-
-`CC BY-NC-SA 4.0`
+这里保留原项目许可证文件。若继续分发或二次开发，请遵守上游项目许可证。
