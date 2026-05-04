@@ -119,6 +119,60 @@ PC 端会根据采样窗口计算平均误差、最大误差、超调、稳态�
 sim/prompt_context.py
 ```
 
+## Prompt Strategy
+
+这个版本不是简单把采样数据丢给 LLM，而是在提示词里明确告诉模型：它必须像一个保守的嵌入式调参助手一样工作。
+
+硬件模式会额外注入这些上下文：
+
+```text
+source: serial_hardware
+serial_port: 当前串口
+controller_output_signal: PWM
+expected_telemetry_frame: timestamp_ms,setpoint,input,pwm,error,p,i,d
+closed_loop_rule: 只能根据真实采样数据决定下一轮 PID
+required_sample_policy: 每组参数都要先采样，再计算指标，再判断
+scoring_policy_hint: 优先降低超调、稳态误差、振荡和 PWM 抖动
+safety_policy_hint: 出现危险响应、通信中断或样本缺失时先回退
+per_round_guardrail_hint: 真实硬件上不要激进地同时大幅调整 P/I/D
+```
+
+核心提示词位置：
+
+```text
+llm/prompts.py
+```
+
+硬件上下文位置：
+
+```text
+sim/prompt_context.py
+```
+
+如果要继续改调参风格，通常改这两处：
+
+- `llm/prompts.py`：修改 LLM 的总体角色、输出 JSON 格式、P/I/D 调参顺序
+- `sim/prompt_context.py`：修改真实硬件、仿真、Simulink 等不同模式的额外约束
+
+本仓库借鉴了 `robot-control-prompts` 的几个提示词原则：
+
+- 先扫描或确认控制对象和通信协议，再进入调参
+- 每轮都必须有真实 samples 和 metrics
+- 没有数据时不允许继续猜 PID
+- 搜索策略应从粗调到细调，而不是随机跳参
+- 输出结果要能追溯到指标，而不是只给一个参数结论
+
+一个适合本项目硬件调参的简化提示词思路如下：
+
+```text
+你是一个嵌入式 PID 调参助手。
+目标是在真实硬件安全的前提下，根据串口遥测数据迭代 PID。
+你只能使用真实采样数据做判断。
+如果样本缺失、通信异常或响应危险，必须先建议回退或修复通信。
+每轮分析必须关注：平均误差、最大误差、超调、稳态误差、振荡次数、PWM 输出行为。
+输出必须是合法 JSON，包含 analysis_summary、tuning_action、p、i、d、status。
+```
+
 ## Useful Commands
 
 运行自检：
